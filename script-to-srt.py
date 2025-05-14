@@ -21,6 +21,7 @@ def generate_srt(script, wps=WORDS_PER_SECOND):
 
     for sentence in sentences:
         sentence = sentence.strip()
+        
         if not sentence:
             continue
         word_count = len(sentence.split())
