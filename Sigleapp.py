@@ -11,6 +11,10 @@ app = Flask(__name__)
 SAVE_FOLDER = os.path.join(os.getcwd(), "audio_files")
 os.makedirs(SAVE_FOLDER, exist_ok=True)
 
+@app.route("/")
+def home():
+    return "✅ Flask TTS and SRT service is running!"
+
 @app.route('/tts', methods=['POST'])
 def text_to_speech():
     data = request.get_json()
@@ -39,7 +43,6 @@ def text_to_speech():
         as_attachment=True,
         download_name=filename
     )
-
 
 # ====== Setup for SRT Generation ======
 WORDS_PER_SECOND = 4.0
