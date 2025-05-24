@@ -1,0 +1,196 @@
+{
+  "name": "AI Forex Trading Bot with Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "interval": 5,
+        "unit": "minutes"
+      },
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api-fxpractice.oanda.com/v3/accounts/{{$env.OANDA_ACCOUNT_ID}}/pricing?instruments=EUR_USD,USD_JPY,GBP_USD",
+        "options": {
+          "fullResponse": false
+        },
+        "authentication": "headerAuth",
+        "headerAuth": "={{{\"Authorization\": \"Bearer \" + $env.OANDA_API_TOKEN}}}"
+      },
+      "name": "Fetch Market Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const instruments = $json.prices.map(price => ({\n  instrument: price.instrument,\n  bid: price.bids[0].price,\n  ask: price.asks[0].price,\n  time: price.time\n}));\n\nreturn [{\n  instruments,\n  userSettings: {\n    budget: 1000, // Default or fetch from DB\n    risk: 'medium',\n    goal: 'intraday'\n  }\n}];"
+      },
+      "name": "Prepare Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const prompts = $json.instruments.map(instrument => ({\n  prompt: `Analyze forex market for ${instrument.instrument}:\n- Current Price: ${instrument.ask}\n- Budget: $${$json.userSettings.budget}\n- Risk: ${$json.userSettings.risk}\n- Goal: ${$json.userSettings.goal}\n\nOutput JSON: { \"action\": \"Buy/Sell/Wait\", \"instrument\": \"${instrument.instrument}\", \"units\": number, \"reason\": \"...\" }`\n}));\n\nreturn prompts;"
+      },
+      "name": "Generate LLM Prompts",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.openai.com/v1/chat/completions",
+        "options": {
+          "fullResponse": false
+        },
+        "authentication": "headerAuth",
+        "headerAuth": "={{{\"Authorization\": \"Bearer \" + $env.OPENAI_API_KEY}}}",
+        "jsonBody": {
+          "model": "gpt-4-turbo-preview",
+          "response_format": { "type": "json_object" },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a professional forex trading AI. Analyze the market and output ONLY valid JSON."
+            },
+            {
+              "role": "user",
+              "content": "={{$json.prompt}}"
+            }
+          ]
+        }
+      },
+      "name": "Call LLM (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "try {\n  const decision = JSON.parse($json.choices[0].message.content);\n  return [{\n    ...decision,\n    timestamp: new Date().toISOString()\n  }];\n} catch (e) {\n  return [{ error: \"Invalid LLM response\", response: $json }];\n}"
+      },
+      "name": "Parse Trade Decision",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "rules": [
+            {
+              "condition": "equal",
+              "value1": "={{$json.action}}",
+              "value2": "Wait",
+              "operation": "not"
+            }
+          ]
+        }
+      },
+      "name": "Filter Valid Trades",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api-fxpractice.oanda.com/v3/accounts/{{$env.OANDA_ACCOUNT_ID}}/orders",
+        "options": {
+          "fullResponse": true
+        },
+        "authentication": "headerAuth",
+        "headerAuth": "={{{\"Authorization\": \"Bearer \" + $env.OANDA_API_TOKEN}}}",
+        "jsonBody": {
+          "order": {
+            "units": "={{$json.units > 0 ? $json.units : -$json.units}}",
+            "instrument": "={{$json.instrument}}",
+            "timeInForce": "FOK",
+            "type": "MARKET",
+            "positionFill": "DEFAULT"
+          }
+        }
+      },
+      "name": "Execute Trade",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1650, 200]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "text": "=Trading Bot Update:\n\n*Trade Executed:*\n- Instrument: {{$json.instrument}}\n- Action: {{$json.action}}\n- Units: {{$json.units}}\n- Reason: {{$json.reason}}\n\n*Market Response:*\nStatus: {{$json.status}}\nOrderID: {{$json.orderID || 'N/A'}}",
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "parseMode": "Markdown"
+      },
+      "name": "Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1850, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{\n  status: \"Skipped\",\n  decision: $json,\n  reason: \"Wait action received\"\n}];"
+      },
+      "name": "Handle Wait",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1650, 400]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "text": "=Trading Bot Update:\n\n*Market Analysis Complete:*\n- Instrument: {{$json.decision.instrument}}\n- Decision: {{$json.decision.action}}\n- Reason: {{$json.decision.reason}}\n\nNo trade executed.",
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "parseMode": "Markdown"
+      },
+      "name": "Telegram Wait Notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1850, 400]
+    }
+  ],
+  "connections": {
+    "Cron Trigger": {
+      "main": [[{"node": "Fetch Market Data", "type": "main", "index": 0}]]
+    },
+    "Fetch Market Data": {
+      "main": [[{"node": "Prepare Data", "type": "main", "index": 0}]]
+    },
+    "Prepare Data": {
+      "main": [[{"node": "Generate LLM Prompts", "type": "main", "index": 0}]]
+    },
+    "Generate LLM Prompts": {
+      "main": [[{"node": "Call LLM (OpenAI)", "type": "main", "index": 0}]]
+    },
+    "Call LLM (OpenAI)": {
+      "main": [[{"node": "Parse Trade Decision", "type": "main", "index": 0}]]
+    },
+    "Parse Trade Decision": {
+      "main": [[{"node": "Filter Valid Trades", "type": "main", "index": 0}]]
+    },
+    "Filter Valid Trades": {
+      "main": [
+        [{"node": "Execute Trade", "type": "main", "index": 0}],
+        [{"node": "Handle Wait", "type": "main", "index": 1}]
+      ]
+    },
+    "Execute Trade": {
+      "main": [[{"node": "Telegram Alert", "type": "main", "index": 0}]]
+    },
+    "Handle Wait": {
+      "main": [[{"node": "Telegram Wait Notice", "type": "main", "index": 0}]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
